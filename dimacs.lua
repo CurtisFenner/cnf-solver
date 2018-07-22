@@ -5,7 +5,7 @@ local function dimacs(str)
 	local cnf = ClauseDatabase.new()
 	local clause = {}
 	for line in str:gmatch "[^\n]+" do
-		if line:match "^[-0-9][-0-9%s]*$" then
+		if line:match "^%s*[-0-9][-0-9%s]*%s*$" then
 			for d in line:gmatch "-?%d+" do
 				local n = tonumber(d)
 				if n < 0 then
