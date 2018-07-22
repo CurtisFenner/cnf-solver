@@ -1,5 +1,8 @@
--- A CNF satisfiability decider
 
+
+--------------------------------------------------------------------------------
+
+-- A CNF satisfiability decider
 local ClauseDatabase = {}
 
 -- RETURNS an empty ClauseDatabase
@@ -11,10 +14,9 @@ function ClauseDatabase.new()
 
 		-- {classname => {Clause => true}}
 		_clauses = {
-			satisfied = {},
-			horn = {},
-			unit = {},
 			contradiction = {},
+			satisfied = {},
+			unit = {},
 			other = {},
 		},
 
@@ -23,91 +25,103 @@ function ClauseDatabase.new()
 
 		-- {term => boolean}
 		_assignment = {},
+
+		_clauseCount = 0,
 	}
 
 	return setmetatable(instance, {__index = ClauseDatabase})
 end
 
--- RETURNS a classification of the clause as one of the following:
--- * satisfied: the current assignment satisfies the clause
--- * contradiction: the current assignment contradicts this clause
--- * unit: the current assignment leaves exactly 1 literal unsatisfied
--- * horn: the current assignment leaves the clause a Horn-clause
--- * other: the current assignment leaves the clause as a non-Horn non-unit
---          unsatisfied and uncontradicted clause
-function ClauseDatabase:_classifyClause(clause)
-	-- Count the number of positive and negative literals in the clause
-	local positive = 0
-	local negative = 0
-	for term, truth in pairs(clause) do
-		if self._assignment[term] == truth then
-			return "satisfied"
-		elseif self._assignment[term] == nil then
-			if truth then
-				positive = positive + 1
-			else
-				negative = negative + 1
-			end
-		end
-	end
-
-	if positive + negative == 0 then
-		return "contradiction"
-	elseif positive + negative == 1 then
-		return "unit"
-	elseif positive == 1 then
-		return "horn"
-	end
-	return "other"
-end
-
 -- RETURNS nothing
 -- MODIFIES this clause database
 function ClauseDatabase:addClause(rawClause)
-	local clause = {}
+	local literals = {}
 	
 	for _, literal in ipairs(rawClause) do
 		local term, truth = literal[1], literal[2]
-		assert(clause[term] == nil, "terms cannot be repeated")
-		assert(type(truth) == "boolean")
+		assert(literals[term] == nil, "terms cannot be repeated")
+		assert(truth == true or truth == false)
 
-		clause[term] = truth
+		literals[term] = truth
 	end
+
+	local clause = {literals = literals, nYet = 0, nSat = 0}
 
 	-- Make the reverse index
-	for term, truth in pairs(clause) do
+	for term, truth in pairs(literals) do
 		self._termIndex[term] = self._termIndex[term] or {}
 		self._termIndex[term][clause] = true
+		if self._assignment[term] == nil then
+			clause.nYet = clause.nYet + 1
+		elseif self._assignment[term] == truth then
+			clause.nSat = clause.nSat + 1
+		end
 	end
 
-	-- Classify and the group the clause
-	local class = self:_classifyClause(clause)
+	local class = (clause.nSat ~= 0 and "satisfied") or (clause.nYet == 0 and "contradiction") or (clause.nYet == 1 and "unit") or "other"
+
 	self._clauses[class][clause] = true
+	clause.class = class
+	self._clauseCount = self._clauseCount + 1
 end
 
 -- RETURNS nothing
 -- MODIFIES this clause database to update the current assignment
-function ClauseDatabase:assign(term, truth)
+function ClauseDatabase:assign(changeTerm, truth)
 	assert(truth == true or truth == false or truth == nil)
-	assert(self._assignment[term] ~= truth)
-
-	-- Initialize the term
-	self._termIndex[term] = self._termIndex[term] or {}
-
-	-- Remove clauses from their old class
-	for clause in pairs(self._termIndex[term]) do
-		local oldClass = self:_classifyClause(clause)
-		assert(self._clauses[oldClass][clause])
-		self._clauses[oldClass][clause] = nil
+	assert(changeTerm ~= nil, "term must not be nil")
+	assert(self._assignment[changeTerm] ~= truth)
+	
+	-- Don't transition directly true <-> false
+	if self._assignment[changeTerm] ~= nil and truth ~= nil then
+		self:assign(changeTerm, nil)
 	end
 
-	-- Update the assignment
-	self._assignment[term] = truth
+	-- Initialize the term
+	self._termIndex[changeTerm] = self._termIndex[changeTerm] or {}
 
-	-- Insert clauses into their new class
-	for clause in pairs(self._termIndex[term]) do
-		local newClass = self:_classifyClause(clause)
-		self._clauses[newClass][clause] = true
+	-- Update the assignment
+	local oldAssignment = self._assignment[changeTerm]
+	self._assignment[changeTerm] = truth
+
+	if truth == nil then
+		-- Freeing a literal
+		for clause in pairs(self._termIndex[changeTerm]) do
+			local oldClass = clause.class
+
+			clause.nYet = clause.nYet + 1
+			if clause.literals[changeTerm] == oldAssignment then
+				clause.nSat = clause.nSat - 1
+			end
+
+			-- Update the classification
+			local newClass = (clause.nSat ~= 0 and "satisfied") or (clause.nYet == 0 and "contradiction") or (clause.nYet == 1 and "unit") or "other"
+			if oldClass ~= newClass then
+				-- TODO: This does not allow O(1) next!
+				self._clauses[oldClass][clause] = nil
+				self._clauses[newClass][clause] = true
+				clause.class = newClass
+			end
+		end
+	else
+		-- Satisfying/contradicting a literal
+		for clause in pairs(self._termIndex[changeTerm]) do
+			local oldClass = clause.class
+
+			clause.nYet = clause.nYet - 1
+			if clause.literals[changeTerm] == truth then
+				clause.nSat = clause.nSat + 1
+			end
+
+			-- Update the classification
+			local newClass = (clause.nSat ~= 0 and "satisfied") or (clause.nYet == 0 and "contradiction") or (clause.nYet == 1 and "unit") or "other"
+			if oldClass ~= newClass then
+				-- TODO: This does not allow O(1) next!
+				self._clauses[oldClass][clause] = nil
+				self._clauses[newClass][clause] = true
+				clause.class = newClass
+			end
+		end
 	end
 end
 
@@ -119,20 +133,13 @@ function ClauseDatabase:unitLiteral()
 		return false
 	end
 
-	for term, truth in pairs(unit) do
+	for term, truth in pairs(unit.literals) do
 		if self._assignment[term] == nil then
 			return {term, truth}
 		end
 	end
 
 	error "unreachable"
-end
-
--- RETURNS false if there is no pure literal
--- RETURNS a pure literal otherwise
-function ClauseDatabase:pureLiteral()
-	print("TODO: implement :pureLiteral()")
-	return false
 end
 
 -- RETURNS whether or not the current assignment contradicts the clauses
@@ -150,32 +157,36 @@ function ClauseDatabase:isSatisfied()
 	return true
 end
 
--- RETURNS whether or not the current assignment leaves all unsatisfied clauses
--- as non-unit Horn clauses
-function ClauseDatabase:isHorn()
-	for key, set in pairs(self._clauses) do
-		if next(set) ~= nil and key ~= "satisfied" and key ~= "horn" then
-			return false
-		end
-	end
-	return true
-end
-
 -- RETURNS an unassigned term to branch on
 -- REQUIRES this is not satisfied nor a contradiction
 function ClauseDatabase:branchingTerm()
 	assert(not self:isSatisfied())
 	assert(not self:isContradiction())
-	
+
 	for key, set in pairs(self._clauses) do
 		if key ~= "satisfied" then
 			local clause = next(set)
 			if clause then
-				for term, truth in pairs(clause) do
+				local positiveCount = 0
+				local negativeCount = 0
+				local positiveLiteral
+				local negativeLiteral
+				for term, truth in pairs(clause.literals) do
 					if self._assignment[term] == nil then
-						return term
+						if truth then
+							positiveCount = positiveCount + 1
+							positiveLiteral = term
+						else
+							negativeCount = negativeCount + 1
+							negativeLiteral = term
+						end
 					end
 				end
+
+				if (positiveCount <= 1 and negativeLiteral) or not positiveLiteral then
+					return negativeLiteral, false
+				end
+				return positiveLiteral, true
 			end
 		end
 	end
@@ -191,7 +202,17 @@ function ClauseDatabase:isSatisfiable(log)
 	log = log or {}
 
 	local stack = {}
+	local ops = 0
+	local begin = os.clock()
+	local assignTime = 0
+	local assigns = 0
 	while true do
+		ops = ops + 1
+		if ops % 1e3 == 0 then
+			print(math.floor(ops / (os.clock() - begin)) .. " ops/second", self._clauseCount)
+			print(string.format("\t%.2f", assignTime / (os.clock() - begin) * 100) .. "% spent assigning")
+		end
+
 		if self:isSatisfied() then
 			-- Record the current assignment
 			local satisfyingAssignment = {}
@@ -204,6 +225,7 @@ function ClauseDatabase:isSatisfiable(log)
 				self:assign(e.term, nil)
 			end
 
+			table.insert(log, {"Done"})
 			return satisfyingAssignment
 		elseif self:isContradiction() then
 			-- Forbid the current assignment: future assignments must differ
@@ -219,63 +241,53 @@ function ClauseDatabase:isSatisfiable(log)
 			-- Backtrack
 			local n = 0
 			local reversed = false
-			while self:isContradiction() or not reversed do
+			assignTime = assignTime - os.clock()
+			while not reversed do
 				if #stack == 0 then
 					-- This CNF is not satisfiable
+					table.insert(log, {"Done"})
 					return false
 				end
-
+				
 				local top = table.remove(stack)
 				reversed = reversed or top.decision
 				self:assign(top.term, nil)
 				n = n + 1
 			end
-			table.insert(log, {"Backtrack", n})
-		end
+			assigns = assigns + n
+			assignTime = assignTime + os.clock()
 
-		local unit = self:unitLiteral()
-		if unit then
-			-- Unit assignments are not branching
-			table.insert(log, {"Unit", unit[1], unit[2]})
-			table.insert(stack, {
-				term = unit[1],
-				assignment = unit[2],
-			})
-			self:assign(unit[1], unit[2])
-		elseif self:isHorn() then
-			-- Horn formulas without unit clauses are satisfiable by assigning
-			-- all free terms to false
-			local term = self:branchingTerm()
-			table.insert(log, {"Horn", term})
-			table.insert(stack, {
-				decision = true,
-				term = term,
-				assignment = false,
-			})
-			self:assign(term, false)
+			table.insert(log, {"Backtrack", n})
 		else
-			-- Pure terms can be assigned their preferred truth value to reduce
-			-- the problem size
-			local pure = self:pureLiteral()
-			if pure then
-				table.insert(log, {"Pure", pure[1], pure[2]})
+			local unit = self:unitLiteral()
+			if unit then
+				-- Unit assignments are not branching
+				table.insert(log, {"Unit", unit[1], unit[2]})
+				assert(unit[2] == true or unit[2] == false)
 				table.insert(stack, {
-					decision = true,
-					term = pure[1],
-					assignment = pure[2],
+					term = unit[1],
+					assignment = unit[2],
+					decision = false,
 				})
-				self:assign(pure[1], pure[2])
+				assignTime = assignTime - os.clock()
+				self:assign(unit[1], unit[2])
+				assignTime = assignTime + os.clock()
 			else
 				-- Pick an arbitrary term and branch
-				local term = self:branchingTerm()
+				local term, value = self:branchingTerm()
+				assert(type(value) == "boolean")
 				table.insert(log, {"Branch", term})
 				table.insert(stack, {
 					decision = true,
 					term = term,
-					assignment = false,
+					assignment = value,
 				})
-				self:assign(term, false)
+
+				assignTime = assignTime - os.clock()
+				self:assign(term, value)
+				assignTime = assignTime + os.clock()
 			end
+			assigns = assigns + 1
 		end
 	end
 end
