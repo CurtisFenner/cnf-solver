@@ -26,7 +26,7 @@ function ClauseDatabase.new()
 		-- {term => boolean}
 		_assignment = {},
 
-		_clauseCount = 0,
+		_inputClauses = {},
 	}
 
 	return setmetatable(instance, {__index = ClauseDatabase})
@@ -62,7 +62,8 @@ function ClauseDatabase:addClause(rawClause)
 
 	self._clauses[class][clause] = true
 	clause.class = class
-	self._clauseCount = self._clauseCount + 1
+
+	table.insert(self._inputClauses, rawClause)
 end
 
 -- RETURNS nothing
@@ -84,6 +85,7 @@ function ClauseDatabase:assign(changeTerm, truth)
 	local oldAssignment = self._assignment[changeTerm]
 	self._assignment[changeTerm] = truth
 
+	-- Update all the clauses that use this literal
 	if truth == nil then
 		-- Freeing a literal
 		for clause in pairs(self._termIndex[changeTerm]) do
@@ -194,6 +196,14 @@ function ClauseDatabase:branchingTerm()
 	error "unreachable"
 end
 
+function ClauseDatabase:clauseList()
+	local copy = {}
+	for i = 1, #self._inputClauses do
+		copy[i] = self._inputClauses[i]
+	end
+	return copy
+end
+
 -- RETURNS false when this this database is not satisfiable (with respect to
 -- the current assignment)
 -- RETURNS a satisfying assignment map {term => boolean} otherwise
@@ -209,7 +219,7 @@ function ClauseDatabase:isSatisfiable(log)
 	while true do
 		ops = ops + 1
 		if ops % 1e3 == 0 then
-			print(math.floor(ops / (os.clock() - begin)) .. " ops/second", self._clauseCount)
+			print(math.floor(ops / (os.clock() - begin)) .. " ops/second", #self._inputClauses)
 			print(string.format("\t%.2f", assignTime / (os.clock() - begin) * 100) .. "% spent assigning")
 		end
 
@@ -275,7 +285,7 @@ function ClauseDatabase:isSatisfiable(log)
 			else
 				-- Pick an arbitrary term and branch
 				local term, value = self:branchingTerm()
-				assert(type(value) == "boolean")
+				assert(value == true or value == false)
 				table.insert(log, {"Branch", term})
 				table.insert(stack, {
 					decision = true,
