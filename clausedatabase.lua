@@ -204,8 +204,8 @@ function ClauseDatabase:clauseList()
 	return copy
 end
 
+-- RETURNS a conflict clause that simply uses all of the decision terms
 function ClauseDatabase:_diagnoseDecision(stack)
-	-- RETURNS a clause negating the current set of decision terms
 
 	local conflict = {}
 	for _, e in ipairs(stack) do
@@ -216,10 +216,67 @@ function ClauseDatabase:_diagnoseDecision(stack)
 	return conflict
 end
 
+-- RETURNS a conflict clause corresponding to "rel sat" algorithm:
+-- Back up the conflicting literals until there is no mention of the current
+-- decision level (other the decision term for the current level)
+function ClauseDatabase:_diagnoseRelSat(stack, antecedents)
+	assert(stack[#stack], "stack must not be empty")
+	
+	local conflictTerm = stack[#stack].term
+	local currentDecisionLevel = antecedents[conflictTerm].decisionLevel
+	local conflictingClause = next(self._clauses.contradiction)
+	assert(conflictingClause.literals[conflictTerm] ~= nil)
+
+	local seen = {}
+	local frontier = {}
+
+	for otherTerm, otherTruth in pairs(conflictingClause.literals) do
+		if otherTerm ~= conflictTerm then
+			if not seen[otherTerm] then
+				seen[otherTerm] = true
+				table.insert(frontier, otherTerm)
+			end
+		end
+	end
+
+	for otherTerm, otherTruth in pairs(antecedents[conflictTerm].clause.literals) do
+		if otherTerm ~= conflictTerm then
+			if not seen[otherTerm] then
+				seen[otherTerm] = true
+				table.insert(frontier, otherTerm)
+			end
+		end
+	end
+
+	local conflictClause = {}
+	while #frontier ~= 0 do
+		local top = table.remove(frontier)
+		local antecedent = antecedents[top]
+		if antecedent.decisionLevel < currentDecisionLevel or not antecedent.clause then
+			table.insert(conflictClause, {top, not self._assignment[top]})
+		else
+			-- "Back up" into the antecedent
+			for otherTerm, otherTruth in pairs(antecedent.clause.literals) do
+				if otherTerm ~= top then
+					if not seen[otherTerm] then
+						seen[otherTerm] = true
+						table.insert(frontier, otherTerm)
+					end
+				end
+			end
+		end
+	end
+
+	return conflictClause
+end
+
 -- RETURNS false when this this database is not satisfiable (with respect to
 -- the current assignment)
 -- RETURNS a satisfying assignment map {term => boolean} otherwise
 function ClauseDatabase:isSatisfiable()
+	if self:isContradiction() then
+		return false
+	end
 
 	-- Stopwatch
 	local ops = 0
@@ -253,7 +310,7 @@ function ClauseDatabase:isSatisfiable()
 		elseif self:isContradiction() then
 			-- Forbid the current assignment: future assignments must differ
 			-- in at least one of the decisions
-			local conflict = self:_diagnoseDecision(stack, antecedents)
+			local conflict = self:_diagnoseRelSat(stack, antecedents)
 			self:addClause(conflict)
 
 			local badLevel = 0
