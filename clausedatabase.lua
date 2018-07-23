@@ -128,16 +128,16 @@ function ClauseDatabase:assign(changeTerm, truth)
 end
 
 -- RETURNS false if there is no unit clause
--- RETURNS a literal otherwise
-function ClauseDatabase:unitLiteral()
-	local unit = next(self._clauses.unit)
-	if not unit then
+-- RETURNS a term, an antecedent clause otherwise
+function ClauseDatabase:_unitLiteral()
+	local unitClause = next(self._clauses.unit)
+	if not unitClause then
 		return false
 	end
 
-	for term, truth in pairs(unit.literals) do
+	for term, truth in pairs(unitClause.literals) do
 		if self._assignment[term] == nil then
-			return {term, truth}
+			return term, unitClause
 		end
 	end
 
@@ -204,23 +204,37 @@ function ClauseDatabase:clauseList()
 	return copy
 end
 
+function ClauseDatabase:_diagnoseDecision(stack)
+	-- RETURNS a clause negating the current set of decision terms
+
+	local conflict = {}
+	for _, e in ipairs(stack) do
+		if e.decision then
+			table.insert(conflict, {e.term, not e.assignment})
+		end
+	end
+	return conflict
+end
+
 -- RETURNS false when this this database is not satisfiable (with respect to
 -- the current assignment)
 -- RETURNS a satisfying assignment map {term => boolean} otherwise
--- MODIFIES log, if provided, to be a list of actions taken by the solver
-function ClauseDatabase:isSatisfiable(log)
-	log = log or {}
+function ClauseDatabase:isSatisfiable()
 
-	local stack = {}
+	-- Stopwatch
 	local ops = 0
 	local begin = os.clock()
-	local assignTime = 0
-	local assigns = 0
+
+	-- State
+	local stack = {}
+	local decisionLevel = 0
+	local antecedents = {}
+
+	-- Run DPLL loop with CDCL
 	while true do
 		ops = ops + 1
 		if ops % 1e3 == 0 then
 			print(math.floor(ops / (os.clock() - begin)) .. " ops/second", #self._inputClauses)
-			print(string.format("\t%.2f", assignTime / (os.clock() - begin) * 100) .. "% spent assigning")
 		end
 
 		if self:isSatisfied() then
@@ -235,69 +249,65 @@ function ClauseDatabase:isSatisfiable(log)
 				self:assign(e.term, nil)
 			end
 
-			table.insert(log, {"Done"})
 			return satisfyingAssignment
 		elseif self:isContradiction() then
 			-- Forbid the current assignment: future assignments must differ
 			-- in at least one of the decisions
-			local newClause = {}
-			for _, e in ipairs(stack) do
-				if e.decision then
-					table.insert(newClause, {e.term, not e.assignment})
-				end
+			local conflict = self:_diagnoseDecision(stack, antecedents)
+			self:addClause(conflict)
+
+			local badLevel = 0
+			for _, literal in ipairs(conflict) do
+				badLevel = math.max(badLevel, antecedents[literal[1]].decisionLevel)
 			end
-			self:addClause(newClause)
 
 			-- Backtrack
-			local n = 0
-			local reversed = false
-			assignTime = assignTime - os.clock()
-			while not reversed do
+			while badLevel <= decisionLevel do
 				if #stack == 0 then
 					-- This CNF is not satisfiable
-					table.insert(log, {"Done"})
 					return false
 				end
 				
 				local top = table.remove(stack)
-				reversed = reversed or top.decision
+				if top.decision then
+					decisionLevel = decisionLevel - 1
+				end
+				antecedents[top.term] = nil
 				self:assign(top.term, nil)
-				n = n + 1
 			end
-			assigns = assigns + n
-			assignTime = assignTime + os.clock()
-
-			table.insert(log, {"Backtrack", n})
 		else
-			local unit = self:unitLiteral()
-			if unit then
+			local unitTerm, unitAntecedent = self:_unitLiteral()
+			if unitTerm then
 				-- Unit assignments are not branching
-				table.insert(log, {"Unit", unit[1], unit[2]})
-				assert(unit[2] == true or unit[2] == false)
+				local truth = unitAntecedent.literals[unitTerm]
 				table.insert(stack, {
-					term = unit[1],
-					assignment = unit[2],
+					term = unitTerm,
+					assignment = truth,
 					decision = false,
 				})
-				assignTime = assignTime - os.clock()
-				self:assign(unit[1], unit[2])
-				assignTime = assignTime + os.clock()
+				self:assign(unitTerm, truth)
+
+				-- Update implication graph
+				antecedents[unitTerm] = {
+					clause = unitAntecedent,
+					decisionLevel = decisionLevel,
+				}
 			else
 				-- Pick an arbitrary term and branch
 				local term, value = self:branchingTerm()
 				assert(value == true or value == false)
-				table.insert(log, {"Branch", term})
 				table.insert(stack, {
 					decision = true,
 					term = term,
 					assignment = value,
 				})
 
-				assignTime = assignTime - os.clock()
+				decisionLevel = decisionLevel + 1
+				antecedents[term] = {
+					decisionLevel = decisionLevel,
+				}
 				self:assign(term, value)
-				assignTime = assignTime + os.clock()
 			end
-			assigns = assigns + 1
 		end
 	end
 end
