@@ -278,10 +278,6 @@ function ClauseDatabase:isSatisfiable()
 		return false
 	end
 
-	-- Stopwatch
-	local ops = 0
-	local begin = os.clock()
-
 	-- State
 	local stack = {}
 	local decisionLevel = 0
@@ -289,11 +285,6 @@ function ClauseDatabase:isSatisfiable()
 
 	-- Run DPLL loop with CDCL
 	while true do
-		ops = ops + 1
-		if ops % 1e3 == 0 then
-			print(math.floor(ops / (os.clock() - begin)) .. " ops/second", #self._inputClauses)
-		end
-
 		if self:isSatisfied() then
 			-- Record the current assignment
 			local satisfyingAssignment = {}

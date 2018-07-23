@@ -6,7 +6,7 @@ table.unpack = table.unpack or unpack
 local source = io.read "*all"
 local cnf = dimacs(source)
 
-if true then
+if false then
 	for _, clause in ipairs(cnf:clauseList()) do
 		io.write("& (")
 		for i, literal in ipairs(clause) do
@@ -26,13 +26,11 @@ end
 local log = {}
 local sat = cnf:isSatisfiable(log)
 print("SAT:", not not sat)
-if sat then
-	for k, v in pairs(sat) do
-		print("", k, "=>", v)
+
+if false then
+	if sat then
+		for k, v in pairs(sat) do
+			print("", k, "=>", v)
+		end
 	end
 end
-
--- print("LOG:")
--- for i, element in ipairs(log) do
--- 	print("", i, table.unpack(element))
--- end
