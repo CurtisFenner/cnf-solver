@@ -30,13 +30,22 @@ already have Lua installed on your system; try `lua -v` to see the version.
 This project is compatible with Lua versions 5.1, 5.2, and 5.3, in addition to
 LuaJIT. LuaJIT runs the solver 2x-3x faster than the standard Lua interpreter.
 
-### Solving DIMCS .cnf files
+### Solving DIMACS .cnf files
 
 The `run_dimacs.lua` script can read simple DIMACS-style .cnf files. Check out
 [the example inputs](input) for what this format looks like.
 
     $ lua run_dimacs.lua < input/too_hard.cnf
-    SAT: true
+    SAT:    true
+            x7      =>      true
+            x6      =>      false
+            x5      =>      false
+            x4      =>      true
+            x2      =>      true
+            x3      =>      true
+            x1      =>      false
+            x8      =>      false
+            x9      =>      false
 
 ## License
 
