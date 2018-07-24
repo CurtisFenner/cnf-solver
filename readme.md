@@ -47,6 +47,35 @@ The `run_dimacs.lua` script can read simple DIMACS-style .cnf files. Check out
             x8      =>      false
             x9      =>      false
 
+## Using the ClauseDatabase library
+
+Require the Lua library as usual. A CNF formula is created by calling the
+`CNF.new()` constructor.
+
+    local CNF = require "clausedatabase"
+    local formula = CNF.new()
+
+Add clauses to the formula by invoking `:addClause`. Clauses are passed as lists
+of *literals*, where each literal is a `{term, truth}` pair. For example,
+"(not a) or b" can be encoded as
+
+    formula:addClause {{"a", false}, {"b", true}}
+
+Ask the formula for a satisfying assignment by invoking `:isSatisfiable()`:
+
+    local model = formula:isSatisfiable()
+    if model then
+        -- The formula is satisfiable!
+        print("Satisfiable:")
+        for key, assignment in pairs(model) do
+            print(key, "=>", assignment)
+        end
+    else
+        -- The formula is NOT satisfiable (every possible assignment results in
+        -- at least one clause being unsatisfied)
+        print("Unsatisfiable")
+    end
+
 ## License
 
 This project is licensed under the LGPL-3.0 license. See
