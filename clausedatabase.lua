@@ -409,13 +409,21 @@ function ClauseDatabase:isSatisfiable()
 				badLevel = math.max(badLevel, antecedents[literal[1]].decisionLevel)
 			end
 
+			if badLevel == 0 then
+				-- Undo all assignments made by this search
+				for _, e in ipairs(stack) do
+					self:assign(e.term, nil)
+				end
+
+				-- This CNF is not satisfiable, since there is a contradiction
+				-- even with no decisions
+				return false
+			end
+
 			-- Backtrack
 			while badLevel <= decisionLevel do
-				if #stack == 0 then
-					-- This CNF is not satisfiable
-					return false
-				end
-				
+				assert(#stack ~= 0)
+
 				local top = table.remove(stack)
 				if top.decision then
 					decisionLevel = decisionLevel - 1
