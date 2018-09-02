@@ -17,6 +17,19 @@
 
 --------------------------------------------------------------------------------
 
+setmetatable(_G, {
+	__index = function(_, key)
+		error("Attempt to read global `" .. tostring(key) .. "`", 2)
+	end,
+	__newindex = function(_, key)
+		error("Attempt to write global `" .. tostring(key) .. "`", 2)
+	end,
+})
+
+local MaxHeap = require "maxheap"
+
+--------------------------------------------------------------------------------
+
 -- A CNF satisfiability decider
 local ClauseDatabase = {}
 
@@ -24,6 +37,20 @@ local ClauseDatabase = {}
 -- Invoke :addClause(list of literals) to add clauses
 -- After adding all clauses, invoke :isSatisfiable() to check satisfiability
 function ClauseDatabase.new()
+	local stats = {}
+	local function compare(a, b)
+		local sa, sb = stats[a], stats[b]
+		local na = sa.nPos * sa.nNeg
+		if na == 0 then
+			na = math.huge
+		end
+		local nb = sb.nPos * sb.nNeg
+		if nb == 0 then
+			nb = math.huge
+		end
+		return na < nb
+	end
+
 	local instance = {
 		-- Clause = {term => boolean}
 
@@ -43,72 +70,29 @@ function ClauseDatabase.new()
 
 		_inputClauses = {},
 
-		-- Statistics for VSIDS
-		_termQueueRead = 1,
-		_termGeneration = 0,
-		_termQueue = {},
-		_termQueueIndex = {},
+		-- Statistics for branching
+		_termHeap = MaxHeap.new(compare),
+
+		-- {term => {nPos = int, nNeg = int}}
+		_termStats = stats,
 	}
 
 	return setmetatable(instance, {__index = ClauseDatabase})
 end
 
-function ClauseDatabase:_bumpTerm(term, truth)
-	local f = self._termQueueIndex[term][truth]
-	local moving = self._termQueue[f]
-
-	-- Decay and bump
-	moving.count = moving.count / 2 ^ (self._termGeneration - moving.generation) + 1
-	moving.generation = self._termGeneration
-
-	-- Do a Shell-sort like update, moving the updated term towards the front
-	-- of the queue
-	for stepIndex = 10, 0, -1 do
-		local step = 2 ^ stepIndex
-		while self._termQueueRead <= f - step do
-			-- Decay
-			local previous = self._termQueue[f - step]
-			previous.count = previous.count / 2 ^ (self._termGeneration - previous.count)
-			previous.generation = self._termGeneration
-
-			if previous.count < moving.count then
-				-- Swap
-				self._termQueue[f - step], self._termQueue[f] = self._termQueue[f], self._termQueue[f - step]
-
-				-- Update the index
-				self._termQueueIndex[previous.term][previous.assignment] = f
-				self._termQueueIndex[term][truth] = f - step
-
-				-- Move the cursor back
-				f = f - step
-			else
-				-- Stop
-				break
-			end
-		end
-	end
-end
-
 function ClauseDatabase:_initTerm(term)
-	if not self._termQueueIndex[term] then
+	if self._termStats[term] == nil then
+		self._termStats[term] = {
+			-- The number of appearances of this term positively in
+			-- unsatisfied clauses (zero when assigned a value)
+			nPos = 0,
+
+			-- The number of appearances of this term negatively in
+			-- unsatisfied clauses (zero when assigned a value)
+			nNeg = 0,
+		}
+		self._termHeap:push(term)
 		self._termIndex[term] = {}
-		local index = #self._termQueue + 1
-		self._termQueue[index] = {
-			term = term,
-			assignment = false,
-			count = 0,
-			generation = self._termGeneration,
-		}
-		self._termQueue[index + 1] = {
-			term = term,
-			assignment = true,
-			count = 0,
-			generation = self._termGeneration,
-		}
-		self._termQueueIndex[term] = {
-			[false] = index,
-			[true] = index + 1,
-		}
 	end
 end
 
@@ -116,19 +100,20 @@ end
 -- MODIFIES this clause database
 function ClauseDatabase:addClause(rawClause)
 	local literals = {}
+	local countPositive = 0
 	
 	for _, literal in ipairs(rawClause) do
 		local term, truth = literal[1], literal[2]
 		assert(literals[term] == nil, "terms cannot be repeated")
 		assert(truth == true or truth == false)
+		if truth then
+			countPositive = countPositive + 1
+		end
 
 		literals[term] = truth
 	end
 
-	local clause = {literals = literals, nYet = 0, nSat = 0}
-
-	-- Decay all previous statistics
-	self._termGeneration = self._termGeneration + 0.1
+	local clause = {literals = literals, nYet = 0, nSat = 0, nPos = 0}
 
 	-- Make the reverse index
 	for term, truth in pairs(literals) do
@@ -136,14 +121,29 @@ function ClauseDatabase:addClause(rawClause)
 		self._termIndex[term][clause] = true
 		if self._assignment[term] == nil then
 			clause.nYet = clause.nYet + 1
+			if truth then
+				clause.nPos = clause.nPos + 1
+			end
 		elseif self._assignment[term] == truth then
 			clause.nSat = clause.nSat + 1
 		end
-
-		self:_bumpTerm(term, truth)
 	end
 
 	local class = (clause.nSat ~= 0 and "satisfied") or (clause.nYet == 0 and "contradiction") or (clause.nYet == 1 and "unit") or "other"
+
+	-- Update the term statistics
+	for term, truth in pairs(literals) do
+		if class == "unit" or class == "other" then
+			if self._assignment[term] == nil then
+				if truth then
+					self._termStats[term].nPos = self._termStats[term].nPos + 1
+				else
+					self._termStats[term].nPos = self._termStats[term].nNeg + 1
+				end
+				self._termHeap:update(term)
+			end
+		end
+	end
 
 	self._clauses[class][clause] = true
 	clause.class = class
@@ -156,6 +156,7 @@ end
 function ClauseDatabase:assign(changeTerm, truth)
 	assert(truth == true or truth == false or truth == nil)
 	assert(changeTerm ~= nil, "term must not be nil")
+	assert(self._termStats[changeTerm] ~= nil, "term must be in a clause")
 	assert(self._assignment[changeTerm] ~= truth)
 	
 	-- Don't transition directly true <-> false
@@ -163,15 +164,14 @@ function ClauseDatabase:assign(changeTerm, truth)
 		self:assign(changeTerm, nil)
 	end
 
-	-- Initialize the term
-	self:_initTerm(changeTerm)
-
 	-- Update the assignment
 	local oldAssignment = self._assignment[changeTerm]
 	self._assignment[changeTerm] = truth
 
 	-- Update all the clauses that use this literal
 	if truth == nil then
+		local statDeltas = {}
+
 		-- Freeing a literal
 		for clause in pairs(self._termIndex[changeTerm]) do
 			local oldClass = clause.class
@@ -188,14 +188,51 @@ function ClauseDatabase:assign(changeTerm, truth)
 				self._clauses[oldClass][clause] = nil
 				self._clauses[newClass][clause] = true
 				clause.class = newClass
+				
+				local wasUnsatisfied = oldClass == "unit" or oldClass == "other"
+				local isUnsatisfied = newClass == "unit" or newClass == "other"
+				if wasUnsatisfied ~= isUnsatisfied then
+					assert(isUnsatisfied)
+					-- Update term statistics
+					for clauseTerm, clauseTruth in pairs(clause.literals) do
+						if self._assignment[clauseTerm] == nil then
+							statDeltas[clauseTerm] = statDeltas[clauseTerm] or {[true] = 0, [false] = 0}
+							statDeltas[clauseTerm][1] = statDeltas[clauseTerm][clauseTruth] + 1
+						end
+					end
+				end
 			end
 		end
+
+		-- Add the term from the term-heap
+		self._termHeap:push(changeTerm)
+		assert(self._termStats[changeTerm].nPos == 0)
+		assert(self._termStats[changeTerm].nNeg == 0)
+
+		-- Update the term statistics
+		for term, statDelta in pairs(statDeltas) do
+			self._termStats[term].nPos = self._termStats[term].nPos + statDelta[true]
+			self._termStats[term].nNeg = self._termStats[term].nNeg + statDelta[false]
+			self._termHeap:update(term)
+		end
 	else
+		-- Remove the term from the term-heap
+		if self._termHeap:contains(changeTerm) then
+			self._termHeap:remove(changeTerm)
+		end
+		self._termStats[changeTerm].nPos = 0
+		self._termStats[changeTerm].nNeg = 0
+
 		-- Satisfying/contradicting a literal
 		for clause in pairs(self._termIndex[changeTerm]) do
 			local oldClass = clause.class
+			local wasHorn = clause.nPos <= 1
 
 			clause.nYet = clause.nYet - 1
+			if clause.literals[changeTerm] == true then
+				clause.nPos = clause.nPos - 1
+			end
+
 			if clause.literals[changeTerm] == truth then
 				clause.nSat = clause.nSat + 1
 			end
@@ -207,6 +244,24 @@ function ClauseDatabase:assign(changeTerm, truth)
 				self._clauses[oldClass][clause] = nil
 				self._clauses[newClass][clause] = true
 				clause.class = newClass
+
+				local wasUnsatisfied = oldClass == "unit" or oldClass == "other"
+				local isUnsatisfied = newClass == "unit" or newClass == "other"
+
+				if wasUnsatisfied ~= isUnsatisfied then
+					-- Update term statistics
+					for t, truth in ipairs(clause.literals) do
+						if self._assignment[t] == nil then
+							local delta = isUnsatisfied and 1 or -1
+							if truth then
+								self._termStats[term].nPos = self._termStats[term].nPos + delta
+							else
+								self._termStats[term].nNeg = self._termStats[term].nNeg + delta
+							end
+							self._termHeap:update(term)
+						end
+					end
+				end
 			end
 		end
 	end
@@ -246,17 +301,13 @@ end
 
 -- RETURNS an unassigned term to branch on
 -- REQUIRES this is not satisfied nor a contradiction
-function ClauseDatabase:branchVSIDS()
+function ClauseDatabase:branchHeap()
 	assert(not self:isSatisfied())
 	assert(not self:isContradiction())
 
-	local top
-	repeat
-		top = self._termQueue[self._termQueueRead]
-		assert(top)
-		self._termQueueRead = self._termQueueRead + 1
-	until self._assignment[top.term] == nil
-	return top.term, top.assignment
+	local top = self._termHeap:pop()
+	local assignment = self._termStats[top].nNeg <= self._termStats[top].nPos
+	return top, assignment
 end
 
 -- RETURNS an unassigned term to branch on
@@ -427,10 +478,6 @@ function ClauseDatabase:isSatisfiable()
 				local top = table.remove(stack)
 				if top.decision then
 					decisionLevel = decisionLevel - 1
-					repeat
-						self._termQueueRead = self._termQueueRead - 1
-						local head = self._termQueue[self._termQueueRead]
-					until head.term == top.term and head.assignment == top.assignment
 				end
 				antecedents[top.term] = nil
 				self:assign(top.term, nil)
@@ -454,7 +501,7 @@ function ClauseDatabase:isSatisfiable()
 				}
 			else
 				-- Pick an arbitrary term and branch
-				local term, value = self:branchVSIDS()
+				local term, value = self:branchHeap()
 				assert(value == true or value == false)
 				table.insert(stack, {
 					decision = true,
