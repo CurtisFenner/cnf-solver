@@ -7,14 +7,6 @@
 -- the most recent decision gets removed by resolution and replaced by the
 -- negation of its antecedent clause
 
--- Uses the Variable State Independent Decaying Sum heuristic from
--- "Chaff: Engineering an Efficient SAT Solver" (2001)
--- https://dl.acm.org/citation.cfm?doid=378239.379017
--- Each new clause (including conflict clauses) bumps the priority of a literal
--- by 1. Each new conflict reduces the priority of all literals by a constant
--- (here, approximately 93.3%). Branching selects (approximately) the literal
--- with the highest priority
-
 --------------------------------------------------------------------------------
 
 setmetatable(_G, {
