@@ -91,6 +91,8 @@ end
 -- RETURNS nothing
 -- MODIFIES this clause database
 function ClauseDatabase:addClause(rawClause)
+	self:_validate()
+
 	local literals = {}
 	local countPositive = 0
 	
@@ -124,13 +126,13 @@ function ClauseDatabase:addClause(rawClause)
 	local class = (clause.nSat ~= 0 and "satisfied") or (clause.nYet == 0 and "contradiction") or (clause.nYet == 1 and "unit") or "other"
 
 	-- Update the term statistics
-	for term, truth in pairs(literals) do
-		if class == "unit" or class == "other" then
+	if class == "unit" or class == "other" then
+		for term, truth in pairs(literals) do
 			if self._assignment[term] == nil then
 				if truth then
 					self._termStats[term].nPos = self._termStats[term].nPos + 1
 				else
-					self._termStats[term].nPos = self._termStats[term].nNeg + 1
+					self._termStats[term].nNeg = self._termStats[term].nNeg + 1
 				end
 				self._termHeap:update(term)
 			end
@@ -141,6 +143,7 @@ function ClauseDatabase:addClause(rawClause)
 	clause.class = class
 
 	table.insert(self._inputClauses, rawClause)
+	self:_validate()
 end
 
 -- RETURNS nothing
@@ -150,6 +153,7 @@ function ClauseDatabase:assign(changeTerm, truth)
 	assert(changeTerm ~= nil, "term must not be nil")
 	assert(self._termStats[changeTerm] ~= nil, "term must be in a clause")
 	assert(self._assignment[changeTerm] ~= truth)
+	self:_validate()
 	
 	-- Don't transition directly true <-> false
 	if self._assignment[changeTerm] ~= nil and truth ~= nil then
@@ -161,14 +165,18 @@ function ClauseDatabase:assign(changeTerm, truth)
 	self._assignment[changeTerm] = truth
 
 	-- Update all the clauses that use this literal
+	local statDeltas = {
+	}
 	if truth == nil then
-		local statDeltas = {}
-
 		-- Freeing a literal
 		for clause in pairs(self._termIndex[changeTerm]) do
 			local oldClass = clause.class
 
 			clause.nYet = clause.nYet + 1
+			if clause.literals[changeTerm] == true then
+				clause.nPos = clause.nPos + 1
+			end
+
 			if clause.literals[changeTerm] == oldAssignment then
 				clause.nSat = clause.nSat - 1
 			end
@@ -180,19 +188,22 @@ function ClauseDatabase:assign(changeTerm, truth)
 				self._clauses[oldClass][clause] = nil
 				self._clauses[newClass][clause] = true
 				clause.class = newClass
+			end
 				
-				local wasUnsatisfied = oldClass == "unit" or oldClass == "other"
-				local isUnsatisfied = newClass == "unit" or newClass == "other"
-				if wasUnsatisfied ~= isUnsatisfied then
-					assert(isUnsatisfied)
-					-- Update term statistics
-					for clauseTerm, clauseTruth in pairs(clause.literals) do
-						if self._assignment[clauseTerm] == nil then
-							statDeltas[clauseTerm] = statDeltas[clauseTerm] or {[true] = 0, [false] = 0}
-							statDeltas[clauseTerm][1] = statDeltas[clauseTerm][clauseTruth] + 1
-						end
+			local wasUnsatisfied = oldClass == "unit" or oldClass == "other"
+			local isUnsatisfied = newClass == "unit" or newClass == "other"
+			if wasUnsatisfied ~= isUnsatisfied then
+				assert(isUnsatisfied)
+				-- Update term statistics
+				for clauseTerm, clauseTruth in pairs(clause.literals) do
+					if self._assignment[clauseTerm] == nil then
+						statDeltas[clauseTerm] = statDeltas[clauseTerm] or {[true] = 0, [false] = 0}
+						statDeltas[clauseTerm][clauseTruth] = statDeltas[clauseTerm][clauseTruth] + 1
 					end
 				end
+			elseif isUnsatisfied then
+				statDeltas[changeTerm] = statDeltas[changeTerm] or {[true] = 0, [false] = 0}
+				statDeltas[changeTerm][clause.literals[changeTerm]] = statDeltas[changeTerm][clause.literals[changeTerm]] + 1
 			end
 		end
 
@@ -200,13 +211,6 @@ function ClauseDatabase:assign(changeTerm, truth)
 		self._termHeap:push(changeTerm)
 		assert(self._termStats[changeTerm].nPos == 0)
 		assert(self._termStats[changeTerm].nNeg == 0)
-
-		-- Update the term statistics
-		for term, statDelta in pairs(statDeltas) do
-			self._termStats[term].nPos = self._termStats[term].nPos + statDelta[true]
-			self._termStats[term].nNeg = self._termStats[term].nNeg + statDelta[false]
-			self._termHeap:update(term)
-		end
 	else
 		-- Remove the term from the term-heap
 		if self._termHeap:contains(changeTerm) then
@@ -241,27 +245,34 @@ function ClauseDatabase:assign(changeTerm, truth)
 				local isUnsatisfied = newClass == "unit" or newClass == "other"
 
 				if wasUnsatisfied ~= isUnsatisfied then
+					assert(wasUnsatisfied)
 					-- Update term statistics
-					for t, truth in ipairs(clause.literals) do
+					for t, needed in pairs(clause.literals) do
 						if self._assignment[t] == nil then
-							local delta = isUnsatisfied and 1 or -1
-							if truth then
-								self._termStats[term].nPos = self._termStats[term].nPos + delta
-							else
-								self._termStats[term].nNeg = self._termStats[term].nNeg + delta
-							end
-							self._termHeap:update(term)
+							statDeltas[t] = statDeltas[t] or {[true] = 0, [false] = 0}
+							statDeltas[t][needed] = statDeltas[t][needed] - 1
 						end
 					end
 				end
 			end
 		end
 	end
+
+	-- Update the term statistics
+	for term, statDelta in pairs(statDeltas) do
+		self._termStats[term].nPos = self._termStats[term].nPos + statDelta[true]
+		self._termStats[term].nNeg = self._termStats[term].nNeg + statDelta[false]
+		self._termHeap:update(term)
+	end
+
+	self:_validate()
 end
 
 -- RETURNS false if there is no unit clause
 -- RETURNS a term, an antecedent clause otherwise
 function ClauseDatabase:_unitLiteral()
+	self:_validate()
+
 	local unitClause = next(self._clauses.unit)
 	if not unitClause then
 		return false
@@ -296,9 +307,10 @@ end
 function ClauseDatabase:branchHeap()
 	assert(not self:isSatisfied())
 	assert(not self:isContradiction())
+	self:_validate()
 
 	local top = self._termHeap:pop()
-	local assignment = self._termStats[top].nNeg <= self._termStats[top].nPos
+	local assignment = 1 <= self._termStats[top].nPos
 	return top, assignment
 end
 
@@ -413,6 +425,62 @@ function ClauseDatabase:_diagnoseRelSat(stack, antecedents)
 	return conflictClause
 end
 
+-- RETURNS nothing
+function ClauseDatabase:_validate()
+	do
+		return
+	end
+
+	-- Verify that each clause class is correct
+	local expectedStats = {}
+	for term in pairs(self._termIndex) do
+		expectedStats[term] = {[true] = 0, [false] = 0}
+	end
+
+	for className, class in pairs(self._clauses) do
+		for clause in pairs(class) do
+			assert(clause.class == className, "clause.class")
+
+			local nSat, nPos, nYet = 0, 0, 0
+			for term, truth in pairs(clause.literals) do
+				if self._assignment[term] == nil then
+					nYet = nYet + 1
+					if truth then
+						nPos = nPos + 1
+					end
+				elseif truth == self._assignment[term] then
+					nSat = nSat + 1
+				end
+			end
+
+			if nSat == 0 then
+				for term, truth in pairs(clause.literals) do
+					if self._assignment[term] == nil then
+						expectedStats[term][truth] = expectedStats[term][truth] + 1
+					end
+				end
+			end
+
+			assert(clause.nSat == nSat, "clause.nSat")
+			assert(clause.nYet == nYet, "clause.nYet")
+			assert(clause.nPos == nPos, "clause.nPos was " .. clause.nPos .. " but expected " .. nPos)
+			local class = (nSat ~= 0 and "satisfied") or (nYet == 0 and "contradiction") or (nYet == 1 and "unit") or "other"
+			assert(clause.class == class, "clause.class")
+		end
+	end
+
+	for term, expected in pairs(expectedStats) do
+		assert(
+			self._termStats[term].nPos == expected[true],
+			"expected " .. term .. " #pos=" .. expected[true] .. " but got " .. self._termStats[term].nPos
+		)
+		assert(
+			self._termStats[term].nNeg == expected[false],
+			"expected " .. term .. " #neg=" .. expected[false] .. " but got " .. self._termStats[term].nNeg
+		)
+	end
+end
+
 -- RETURNS false when this this database is not satisfiable (with respect to
 -- the current assignment)
 -- RETURNS a satisfying assignment map {term => boolean} otherwise
@@ -420,6 +488,7 @@ function ClauseDatabase:isSatisfiable()
 	if self:isContradiction() then
 		return false
 	end
+	self:_validate()
 
 	-- State
 	local stack = {}
